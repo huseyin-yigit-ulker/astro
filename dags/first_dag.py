@@ -5,7 +5,7 @@ from typing import List, Dict, Any
 import requests
 import psycopg2
 from airflow.sdk import dag, task
-from airflow.timetables.cron import CronTriggerTimetable  # <-- import CronTriggerTimetable
+
 
 
 DB_SETTINGS = {
