@@ -5,6 +5,8 @@ from typing import List, Dict, Any
 import requests
 import psycopg2
 from airflow.sdk import dag, task
+from airflow.timetables.cron import CronTriggerTimetable  # <-- import CronTriggerTimetable
+
 
 DB_SETTINGS = {
     "host": "ep-bold-darkness-a2urmndi-pooler.eu-central-1.aws.neon.tech",
@@ -51,7 +53,7 @@ def rsi(values: List[float], window: int = 14):
     return 100 - (100 / (1 + rs))
 
 
-@dag(schedule_interval="*/5 * * * *")
+@dag(schedule=CronTriggerTimetable("*/5 * * * *", timezone="UTC"), catchup=False)
 def binance_5m_etl():
 
     @task(task_id="extract_binance_data", retries=2)
