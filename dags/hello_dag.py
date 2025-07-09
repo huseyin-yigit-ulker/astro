@@ -10,7 +10,7 @@ API = "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=u
 
 @dag
 def taskflow():
-    @task(task_id="extract", retries=2)
+    @task(task_id="extract_bitcoin_price", retries=2)
     def extract_bitcoin_price() -> Dict[str, float]:
         return requests.get(API).json()["bitcoin"]
 
