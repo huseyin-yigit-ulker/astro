@@ -1,34 +1,58 @@
 import logging
-from datetime import datetime
-from typing import Dict
+from datetime import datetime, timedelta
+from typing import Dict, List
 
+import pandas as pd
 import requests
-from airflow.sdk import dag, task
+import ta
+from airflow.decorators import dag, task
+from airflow.providers.postgres.hooks.postgres import PostgresHook
 
-API = "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd&include_market_cap=true&include_24hr_vol=true&include_24hr_change=true&include_last_updated_at=true"
+SYMBOL = "BTCUSDT"
+INTERVAL = "5m"
+LIMIT = 100
+POSTGRES_CONN_ID = "postgres_binance"
 
+@dag(
+    schedule_interval="*/5 * * * *",  # Every 5 minutes
+    start_date=datetime(2024, 1, 1),
+    catchup=False,
+    tags=["binance", "indicators", "taskflow"]
+)
+def binance_5m_indicator_etl():
 
-@dag
-def taskflow():
-    @task(task_id="extract", retries=2)
-    def extract_bitcoin_price() -> Dict[str, float]:
-        return requests.get(API).json()["bitcoin"]
+    @task(retries=2, retry_delay=timedelta(minutes=1))
+    def extract_binance_ohlcv() -> List[Dict]:
+        url = f"https://api.binance.com/api/v3/klines?symbol={SYMBOL}&interval={INTERVAL}&limit={LIMIT}"
+        logging.info(f"Fetching from: {url}")
+        response = requests.get(url)
+        response.raise_for_status()
+        return response.json()
 
-    @task(multiple_outputs=True)
-    def process_data(response: Dict[str, float]) -> Dict[str, float]:
-        logging.info(response)
-        return {"usd": response["usd"], "change": response["usd_24h_change"]}
+    @task()
+    def transform_with_indicators(raw_data: List[Dict]) -> pd.DataFrame:
+        df = pd.DataFrame(raw_data, columns=[
+            "open_time", "open", "high", "low", "close", "volume",
+            "close_time", "quote_asset_volume", "number_of_trades",
+            "taker_buy_base_vol", "taker_buy_quote_vol", "ignore"
+        ])
 
-    @task
-    def store_data(data: Dict[str, float]):
-        logging.info(f"Store: {data['usd']} with change {data['change']}")
+        df['open_time'] = pd.to_datetime(df['open_time'], unit='ms')
+        df = df[['open_time', 'open', 'high', 'low', 'close', 'volume']].astype(float)
+        df['sma'] = ta.trend.sma_indicator(df['close'], window=14)
+        df['ema'] = ta.trend.ema_indicator(df['close'], window=14)
+        df['rsi'] = ta.momentum.rsi(df['close'], window=14)
+        return df.dropna().tail(1)  # return latest complete row only
 
-    _extract_bitcoin_price = extract_bitcoin_price()
-    _process_data = process_data(_extract_bitcoin_price)
-    store_data(_process_data)
+    @task()
+    def load_to_postgres(df: pd.DataFrame):
+        pg_hook = PostgresHook(postgres_conn_id=POSTGRES_CONN_ID)
+        engine = pg_hook.get_sqlalchemy_engine()
+        df.to_sql("binance_ohlcv_indicators", engine, if_exists="append", index=False, method="multi")
+        logging.info(f"Inserted {len(df)} rows into PostgreSQL")
 
-    # alternative in one line:
-    # store_data(process_data(extract_bitcoin_price()))
+    raw = extract_binance_ohlcv()
+    enriched = transform_with_indicators(raw)
+    load_to_postgres(enriched)
 
-
-taskflow()
+dag_instance = binance_5m_indicator_etl()
