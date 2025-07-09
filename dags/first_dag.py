@@ -51,7 +51,7 @@ def rsi(values: List[float], window: int = 14):
     return 100 - (100 / (1 + rs))
 
 
-@dag(schedule_interval="*/5 * * * *", start_date=datetime(2024, 1, 1), catchup=False)
+@dag()
 def binance_5m_etl():
 
     @task(task_id="extract_binance_data", retries=2)
