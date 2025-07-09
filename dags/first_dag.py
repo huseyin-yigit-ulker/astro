@@ -1,9 +1,11 @@
+import logging
+from datetime import datetime, timedelta
+from typing import List, Dict
+
 import requests
 import psycopg2
-from datetime import datetime, timedelta
-from airflow.decorators import dag, task
+from airflow.sdk import dag, task
 
-# DB connection info for Neon
 DB_SETTINGS = {
     "host": "ep-bold-darkness-a2urmndi-pooler.eu-central-1.aws.neon.tech",
     "dbname": "neondb",
@@ -18,13 +20,14 @@ SYMBOL = "BTCUSDT"
 INTERVAL = "5m"
 LIMIT = 100
 
-# Indicator functions (same as your script)
-def sma(values, window):
+
+def sma(values: List[float], window: int):
     if len(values) < window:
         return None
     return sum(values[-window:]) / window
 
-def ema(values, window, prev_ema=None):
+
+def ema(values: List[float], window: int, prev_ema=None):
     if len(values) < window:
         return None
     k = 2 / (window + 1)
@@ -32,7 +35,8 @@ def ema(values, window, prev_ema=None):
         return sma(values, window)
     return values[-1] * k + prev_ema * (1 - k)
 
-def rsi(values, window=14):
+
+def rsi(values: List[float], window: int = 14):
     if len(values) < window + 1:
         return None
     gains = 0
@@ -49,56 +53,101 @@ def rsi(values, window=14):
     return 100 - (100 / (1 + rs))
 
 
-@dag(
-    schedule_interval="*/5 * * * *",
-    start_date=datetime(2024, 1, 1),
-    catchup=False,
-    tags=["binance", "neon", "indicators"]
-)
-def binance_indicator_etl():
+@dag(schedule_interval="*/5 * * * *", start_date=datetime(2024, 1, 1), catchup=False)
+def binance_5m_etl():
 
-    @task(retries=2, retry_delay=timedelta(minutes=1))
-    def fetch_binance_data():
+    @task(task_id="extract_binance_data", retries=2)
+    def extract_binance_data() -> List[List]:
         url = f"https://api.binance.com/api/v3/klines?symbol={SYMBOL}&interval={INTERVAL}&limit={LIMIT}"
+        logging.info(f"Fetching data from {url}")
         response = requests.get(url)
         response.raise_for_status()
         return response.json()
 
-    @task()
-    def process_and_save(data):
-        conn = psycopg2.connect(**DB_SETTINGS)
-        cursor = conn.cursor()
-
-        insert_query = """
-        INSERT INTO binance_ohlcv_indicators (
-            open_time, open, high, low, close, volume, sma, ema, rsi
-        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-        ON CONFLICT (open_time) DO NOTHING;
-        """
-
+    @task(multiple_outputs=True)
+    def process_and_calc_indicators(raw_data: List[List]) -> Dict[str, List]:
         closes = []
+        open_times = []
+        opens = []
+        highs = []
+        lows = []
+        volumes = []
+
+        sma_list = []
+        ema_list = []
+        rsi_list = []
+
         ema_prev = None
 
-        for row in data:
+        for row in raw_data:
             open_time = datetime.fromtimestamp(row[0] / 1000.0)
             open_, high, low, close, volume = map(float, row[1:6])
+
+            open_times.append(open_time)
+            opens.append(open_)
+            highs.append(high)
+            lows.append(low)
             closes.append(close)
+            volumes.append(volume)
 
             sma_val = sma(closes, 14)
             ema_val = ema(closes, 14, ema_prev)
             ema_prev = ema_val if ema_val is not None else ema_prev
             rsi_val = rsi(closes, 14)
 
-            cursor.execute(insert_query, (
-                open_time, open_, high, low, close, volume,
-                sma_val, ema_val, rsi_val
-            ))
+            sma_list.append(sma_val)
+            ema_list.append(ema_val)
+            rsi_list.append(rsi_val)
 
+        logging.info(f"Processed {len(raw_data)} rows with indicators")
+
+        return dict(
+            open_time=open_times,
+            open=opens,
+            high=highs,
+            low=lows,
+            close=closes,
+            volume=volumes,
+            sma=sma_list,
+            ema=ema_list,
+            rsi=rsi_list,
+        )
+
+    @task(task_id="save_to_postgres")
+    def save_to_postgres(data: Dict[str, List]):
+        conn = psycopg2.connect(**DB_SETTINGS)
+        cursor = conn.cursor()
+
+        insert_query = """
+            INSERT INTO binance_ohlcv_indicators
+            (open_time, open, high, low, close, volume, sma, ema, rsi)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (open_time) DO NOTHING;
+        """
+
+        rows_to_insert = list(
+            zip(
+                data["open_time"],
+                data["open"],
+                data["high"],
+                data["low"],
+                data["close"],
+                data["volume"],
+                data["sma"],
+                data["ema"],
+                data["rsi"],
+            )
+        )
+
+        cursor.executemany(insert_query, rows_to_insert)
         conn.commit()
         cursor.close()
         conn.close()
+        logging.info(f"Inserted {len(rows_to_insert)} rows into PostgreSQL")
 
-    raw_data = fetch_binance_data()
-    process_and_save(raw_data)
+    raw = extract_binance_data()
+    processed = process_and_calc_indicators(raw)
+    save_to_postgres(processed)
 
-dag = binance_indicator_etl()
+
+binance_5m_etl()
