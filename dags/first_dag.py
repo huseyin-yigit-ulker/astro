@@ -115,6 +115,7 @@ def binance_5m_etl():
 
     @task(task_id="save_to_postgres")
     def save_to_postgres(data: Dict[str, List]):
+        logging.info(f"started to postgre")
         conn = psycopg2.connect(**DB_SETTINGS)
         cursor = conn.cursor()
 
