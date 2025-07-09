@@ -9,7 +9,7 @@ SYMBOL = "BTCUSDT"
 INTERVAL = "1m"
 LIMIT = 5  # number of candles to fetch
 
-@dag(schedule_interval="*/1 * * * *", start_date=datetime(2024, 1, 1), catchup=False)
+@dag()
 def binance_1m_print():
 
     @task(retries=2)
