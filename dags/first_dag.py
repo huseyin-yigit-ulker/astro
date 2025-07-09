@@ -53,7 +53,7 @@ def rsi(values: List[float], window: int = 14):
     return 100 - (100 / (1 + rs))
 
 
-@dag(schedule=CronTriggerTimetable("*/5 * * * *", timezone="UTC"), catchup=False)
+@dag(schedule_interval="*/5 * * * *",  catchup=False)
 def binance_5m_etl():
 
     @task(task_id="extract_binance_data", retries=2)
