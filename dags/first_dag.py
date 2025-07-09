@@ -8,6 +8,7 @@ from airflow.sdk import dag, task
 
 
 
+
 DB_SETTINGS = {
     "host": "ep-bold-darkness-a2urmndi-pooler.eu-central-1.aws.neon.tech",
     "dbname": "neondb",
@@ -53,7 +54,7 @@ def rsi(values: List[float], window: int = 14):
     return 100 - (100 / (1 + rs))
 
 
-@dag(schedule_interval="*/5 * * * *",  catchup=False)
+@dag(schedule = "*/5 * * * *",  catchup=False)
 def binance_5m_etl():
 
     @task(task_id="extract_binance_data", retries=2)
